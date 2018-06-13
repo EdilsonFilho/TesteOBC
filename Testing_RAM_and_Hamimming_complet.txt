@@ -1,0 +1,820 @@
+#include "tcramw_r4.h"
+#include "sys_core.h"
+#include "sys_selftest.h"
+#include "esm.h"
+#include "sys_common.h"
+#include "system.h"
+#include <inttypes.h>
+#include <time.h>
+#include <stdlib.h>
+#include "rti.h"
+#include "reg_rti.h"
+#include <stdio.h>
+
+
+
+
+
+/* Defines */
+#define RAM_BASE		0x08000000
+#define ECC_BASE		0x08400000
+#define SBE_EVEN		(*(unsigned int *)(0xFFFFF808))
+#define tcram1bitError 	(*(unsigned int *)(0x08400000))		//	data 1 ECC
+#define tcram2bitError 	(*(unsigned int *)(0x08400008))		//	data 2 ECC
+#define ramCLCError     (*(unsigned int *)(0x08400001))		//	data 1 codificada CLC
+#define tcram1bit		(*(unsigned int *)(0x08000000))     //  data 1
+#define tcram2bit		(*(unsigned int *)(0x08000008))		//	data 2
+#define ramCLC      	(*(unsigned int *)(0x08000001))     //  data 1 para CLC
+//#define N (1000000L)//1000000L
+#define N 40
+#define L 5
+#define C 8
+
+
+
+ECC_ST 	   *ECC_EVEN_Ptr = (ECC_ST *) RAM_ECC_EVN;
+ECC_ST 	   *ECC_ODD_Ptr = (ECC_ST *) RAM_ECC_ODD;
+
+
+//ECC_Ptr->RAMCTRL_UN.RAMCTRL_ST.ECC_ENABLE_B4 = 0xA;  /* enable ECC */
+//ECC_Ptr->RAMCTRL_UN.RAMCTRL_ST.ECC_ENABLE_B4;        /* wait for write to complete */
+
+/* USER CODE END */
+
+
+void main(void)
+{
+
+// para gerar erros aleatorios
+int aleatorio;
+int rodada;
+
+int dadoCodificadoCLC[40];
+srand(time(NULL));
+aleatorio = rand() %100;
+printf("\nnumero aleatorio %d",aleatorio);
+//fim
+rtiInit();// inicializar o rti
+
+	printf("\nIniciando teste ECC na memoria Ram\n");
+	  int tamanho,tamanho2, tamanho3;
+	  int i,j;
+	  short int * aux;
+	  float tempoT;
+	  tamanho  = 32;// tamanho do dado
+	  tamanho2 = 36; //tamanho do dado com 4 bits de ecc
+	  tamanho3 = 64;
+      uint32_t tickstart;
+      uint64_t mensagemCLC;
+	  double ms=0;
+	  uint32_t read;
+	  uint32_t SBE_counter1=0;   /////Contador de erros de um único bit
+	       int a=4;// variaveis para codificar
+	       int tam=16;
+	       short matrizCodificacao[L][C];
+	       short matrizComparacao[L][C];
+	       short xorBits=0;
+	       short mensagemCodificada[N];
+	       int auxl[16];//fim
+	    // inicia variaveis de decodificacao
+	   //    short mensagemRecuperada[N]; //Vetor de recuperação da mensagem para depois passar para matriz
+	       short sindromeColuna[12];
+	       short sindromeLinhas[5][3];
+	       short sindromeParLinhas[5];
+	       short numLinhasSindrome=0;
+	       short orSindromeLinhas[5];
+	       memset(orSindromeLinhas, 0, sizeof(orSindromeLinhas));
+
+
+
+	printf ("Tamanho da variavel read = %d bytes\n",sizeof (read) );
+	printf ("Tamanho da variavel tcram1bitError = %d bytes\n",sizeof (tcram1bitError) );
+	printf ("Tamanho da variavel ramCLCError = %d bytes\n",sizeof (ramCLCError) );
+	printf ("Tamanho da variavel tcram1bit = %d bytes\n",sizeof (tcram1bit) );
+	printf ("Tamanho da variavel ramCLC = %d bytes\n",sizeof (ramCLC) );
+
+	  printf("visualizando a variavel read: \n");
+			aux = (short int *) calloc(tamanho, sizeof(short int));
+
+			for(i=0; i<tamanho; i++)
+			{
+				if(read & 1){
+					aux[i] = 1;
+			    	}
+				else{
+				aux[i] = 0;
+					}
+					read >>= 1;
+			}
+			for(i=tamanho-1; i>=0; i--){
+			printf("%d", aux[i]);
+			}
+			free(aux);
+			printf("\n\n");
+		// fim do algoritmo para mostrar em binario
+			printf("\n**********\n");
+
+      printf("desabilitando o ecc\n");
+      _coreDisableRamEcc_(); ///Desativar verificação ECC
+      tcram1bit = 0x5A; ///Dados 1  em binario:  0000000001011010 em 16bits
+
+      printf("Mensagem antes de ser Codificada em CLC: \n");// Monstrando mensagem codificada em CLC em 40bits
+
+
+//inicio de codificacao em clc
+// iniciando contagem de tempo
+
+
+      			for(i=0; i<tam; i++)
+      			{
+      				if(tcram1bit & 1){
+      					auxl[i] = 1;
+      			    	}
+      				else{
+      				auxl[i] = 0;
+      					}
+      					tcram1bit >>= 1;
+      			}
+      			for(i=tam-1; i>=0; i--){
+      						printf("%d", auxl[i]);
+      						}
+
+printf("\n############\n");
+
+for(rodada=0;rodada<10;rodada++){// inicio da rodada de teste para codificar e descodificar
+	int igual = 1;
+	int identificador =0;
+	printf("NUMERO DA RODADA TESTE CLC %d\n",rodada+1);
+      for(i=0;i<N;i++){ //Zera o vetor
+          mensagemCodificada[i]=0;
+      }
+
+      for(i=0;i<L;i++){ // Zera a matriz de codificação
+          for(j=0;j<C;j++){
+              matrizCodificacao[i][j]=0;
+          }
+      }
+
+
+      rtiStopCounter(rtiCOUNTER_BLOCK0);
+      rtiResetCounter(rtiCOUNTER_BLOCK0);
+      rtiStartCounter(rtiCOUNTER_BLOCK0);
+
+      matrizCodificacao[0][0]= auxl[15];
+      matrizCodificacao[0][1]= auxl[14];
+      matrizCodificacao[0][2]= auxl[13];
+      matrizCodificacao[0][3]= auxl[12];
+      matrizCodificacao[1][0]= auxl[11];
+      matrizCodificacao[1][1]= auxl[10];
+      matrizCodificacao[1][2]= auxl[9];
+      matrizCodificacao[1][3]= auxl[8];
+      matrizCodificacao[2][0]= auxl[7];
+      matrizCodificacao[2][1]= auxl[6];
+      matrizCodificacao[2][2]= auxl[5];
+      matrizCodificacao[2][3]= auxl[4];
+      matrizCodificacao[3][0]= auxl[3];
+      matrizCodificacao[3][1]= auxl[2];
+      matrizCodificacao[3][2]= auxl[1];
+      matrizCodificacao[3][3]= auxl[0];
+
+
+
+
+      for(i=0;i<4;i++){ // Calcula os checkbits da primeira coluna
+          int j=0;
+          xorBits = matrizCodificacao[i][1];
+          for(j=2;j<4;j++){
+              xorBits = xorBits^matrizCodificacao[i][j];
+          }
+          matrizCodificacao[i][j] = xorBits;
+      }
+      for(i=0;i<4;i++){ // Calcula os checkbits da segunda coluna
+          j=0;
+          xorBits = matrizCodificacao[i][0];
+          for(j=2;j<4;j++){
+              xorBits = xorBits^matrizCodificacao[i][j];
+          }
+          matrizCodificacao[i][j+1] = xorBits;
+      }
+      for(i=0;i<4;i++){ // Calcula os checkbits da terceira coluna
+          j=0;
+          xorBits = matrizCodificacao[i][3];
+          for(j=0;j<2;j++){
+              xorBits = xorBits^matrizCodificacao[i][j];
+          }
+          matrizCodificacao[i][j+4] = xorBits;
+      }
+      for(i=0;i<4;i++){ // Calcula os bits de paridade de palavra
+          j=0;
+          xorBits = matrizCodificacao[i][j];
+          for(j=1;j<7;j++){
+              xorBits = xorBits^matrizCodificacao[i][j];
+          }
+          matrizCodificacao[i][j] = xorBits;
+      }
+      for(j=0;j<8;j++){ // Calcula os bits de paridade
+          i=0;
+          xorBits = matrizCodificacao[i][j];
+          for(i=1;i<4;i++){
+              xorBits = xorBits^matrizCodificacao[i][j];
+          }
+          matrizCodificacao[i][j] = xorBits;
+      }
+
+      for(i=0;i<L;i++){
+          for(j=0;j<C;j++){
+              mensagemCodificada[8*i+j ]=matrizCodificacao[i][j];
+          }
+      }
+      //fazendo variavel de 64b receber mensagemCodificada
+
+
+printf("\n");
+      printf("Mensagem Codificada em CLC: \n");// Monstrando mensagem codificada em CLC em 40bits
+      for(i=0;i<L;i++){
+          for(j=0;j<C;j++){
+              printf("%d",matrizCodificacao[i][j]);
+              printf("\t");
+          }
+          printf("\n");
+      }
+      rtiStopCounter(rtiCOUNTER_BLOCK0);// parando o contador de tempo
+          tickstart = rtiGetCurrentTick(rtiCOMPARE0);
+          tickstart = rtiGetCurrentTick(rtiCOMPARE0);
+          tempoT=(tickstart/40000.0);
+          printf("\ntempo para codificar em CLC: %f milisegundos\n",tempoT);
+
+
+      for(i=0;i<L;i++){ // Preenche matriz para comparacao-----------------------------------------------
+          for(j=0;j<C;j++){
+              matrizComparacao[i][j]=matrizCodificacao[i][j];
+           }
+      }
+
+      printf("Matriz de comparacao: \n");
+      //MOSTRAR MATRIZ COMPARACAO-----------------------------------------------
+           for(i=0;i<L;i++){
+           	for(j=0;j<C;j++){
+           		printf("%d",matrizComparacao[i][j]);
+           		printf("\t");
+           		}
+           	printf("\n");
+           	}
+
+      for(i=0;i<40;i++){
+          printf("%d",mensagemCodificada[i]);
+      }
+      ramCLC = mensagemCodificada[40];/// fazendo
+      printf("\nvisualizando a variavel ramCLC: \n");
+    			aux = (short int *) calloc(tamanho3, sizeof(short int));
+
+    			for(i=0; i<tamanho3; i++)
+    			{
+    				if(ramCLC & 1){
+    					aux[i] = 1;
+    			    	}
+    				else{
+    				aux[i] = 0;
+    					}
+    					ramCLC >>= 1;
+    			}
+    			for(i=tamanho3-1; i>=0; i--){
+    			printf("%d", aux[i]);
+    			}
+    			free(aux);
+    			printf("\n\n");
+
+    			printf("em printf %d",ramCLC);
+
+
+
+
+    //  dadoCodificadoCLC[40] = codificarCLC(tcram1bit);  /// Codificando em CLC, saida sera em 40bits
+      printf("\n ");// fim da codificacao em clc
+
+      //inicio DECODIFICACAO CLC
+
+      //matrizCodificacao = geraErroCLC(aleatorio,matrizCodificacao[16]);
+      aleatorio = rand() %100;
+      printf("\nnumero aleatorio para inserir o erro %d\n",aleatorio);
+
+
+      if(aleatorio ==0 && aleatorio <5){
+      	 // não inserimos erro
+      	  printf("numero de erros inseridos no CLC = zero\n");
+      	  identificador =0;
+      	}
+      else if(aleatorio==5 || aleatorio < 20){
+      	  matrizCodificacao[0][0]= 1;
+      	  printf("numero de erros inseridos no CLC= um\n");
+      	identificador =1;
+      	}
+      else if(aleatorio==20 || aleatorio < 35){
+      		matrizCodificacao[0][0]= 1;
+      		matrizCodificacao[0][1]= 1;
+
+      	  printf("numero de erros inseridos no CLC= dois\n");
+      	identificador =2;
+      	}
+      else if(aleatorio==35 || aleatorio < 50){
+      		matrizCodificacao[0][0]= 1;
+      		matrizCodificacao[0][1]= 1;
+      		matrizCodificacao[0][2]= 1;
+      		printf("numero de erros inseridos no CLC= tres\n");
+      		identificador =3;
+      	}
+      else if(aleatorio==50 || aleatorio < 65){
+      		matrizCodificacao[0][0]= 1;
+      	    matrizCodificacao[0][1]= 1;
+      		matrizCodificacao[0][2]= 1;
+      		matrizCodificacao[0][3]= 1;
+      	  printf("numero de erros inseridos no CLC= quatro\n");
+      	identificador =4;
+      	}
+      else if(aleatorio==65 || aleatorio < 80){
+      		matrizCodificacao[0][0]= 1;
+      	    matrizCodificacao[0][1]= 1;
+      		matrizCodificacao[0][2]= 1;
+      		matrizCodificacao[1][0]= 1;
+      		matrizCodificacao[1][1]= 1;
+      	  printf("numero de erros inseridos no CLC= cinco\n");
+      	identificador =5;
+      	}
+      else if(aleatorio==80 || aleatorio < 85){
+      		matrizCodificacao[0][0]= 1;
+      		matrizCodificacao[0][1]= 1;
+      		matrizCodificacao[0][2]= 1;
+      		matrizCodificacao[1][0]= 1;
+      		matrizCodificacao[1][1]= 1;
+      		matrizCodificacao[1][2]=1;
+      	  printf("numero de erros inseridos no CLC= seis\n");
+      	identificador =6;
+      	}
+      else if(aleatorio==85 || aleatorio < 90){
+            		matrizCodificacao[0][0]= 1;
+            		matrizCodificacao[0][1]= 1;
+            		matrizCodificacao[0][2]= 1;
+            		matrizCodificacao[1][0]= 1;
+            		matrizCodificacao[1][1]= 1;
+            		matrizCodificacao[1][2]=1;
+            		matrizCodificacao[1][3]= 1;
+
+            	  printf("numero de erros inseridos no CLC= sete\n");
+            	  identificador =7;
+            	}
+      else	if(aleatorio==90 || aleatorio < 100){
+                		matrizCodificacao[0][0]= 1;
+                		matrizCodificacao[0][1]= 1;
+                		matrizCodificacao[0][2]= 1;
+                		matrizCodificacao[0][3]= 1;
+                		matrizCodificacao[1][0]= 1;
+                		matrizCodificacao[1][1]=1;
+                		matrizCodificacao[1][2]= 1;
+                		matrizCodificacao[1][3]= 0;
+
+                	  printf("numero de erros inseridos no CLC= oito\n");
+                	  identificador =8;
+                	}
+
+      	rtiStopCounter(rtiCOUNTER_BLOCK0);//medir tempo para decodificar
+      	rtiResetCounter(rtiCOUNTER_BLOCK0);
+      	rtiStartCounter(rtiCOUNTER_BLOCK0);
+      	 printf("\nMatriz de ALTERADA:\n");
+      	         for( i=0;i<L;i++){
+      	             for(j=0;j<C;j++){
+      	                 printf("%d",matrizCodificacao[i][j]);
+      	                 printf("\t");
+      	             }
+      	             printf("\n");
+      	         }
+      for(i=0;i<2;i++){
+
+             for(i=0;i<C;i++){ //Calcula a sindrome de paridade de coluna, para identificar em qual coluna houve o erro
+                 sindromeColuna[i]=matrizCodificacao[0][i]^matrizCodificacao[1][i]^matrizCodificacao[2][i]^matrizCodificacao[3][i]^matrizCodificacao[4][i];
+             }
+
+             for(i=0;i<L;i++){ //Calcula a sindrome de paridade de linha, para indicar em qual linha houve erros
+                 sindromeLinhas[i][2]=matrizCodificacao[i][0]^matrizCodificacao[i][1]^matrizCodificacao[i][3]^matrizCodificacao[i][4];
+                 sindromeLinhas[i][1]=matrizCodificacao[i][0]^matrizCodificacao[i][2]^matrizCodificacao[i][3]^matrizCodificacao[i][5];
+                 sindromeLinhas[i][0]=matrizCodificacao[i][1]^matrizCodificacao[i][2]^matrizCodificacao[i][3]^matrizCodificacao[i][6];
+                 sindromeParLinhas[i]=matrizCodificacao[i][0]^matrizCodificacao[i][1]^matrizCodificacao[i][2]^matrizCodificacao[i][3]^matrizCodificacao[i][4]^matrizCodificacao[i][5]^matrizCodificacao[i][6]^matrizCodificacao[i][7];
+             }
+
+             for(i=0;i<L;i++){ //Faz um OR de todos os elementos de uma linha da matriz Sindrome de Linha, linha a linha
+                 orSindromeLinhas[i]=sindromeLinhas[i][0]||sindromeLinhas[i][1]||sindromeLinhas[i][2];
+             }
+
+             numLinhasSindrome=1*(orSindromeLinhas[0]||sindromeParLinhas[0])+1*(orSindromeLinhas[1]||sindromeParLinhas[1])+1*(orSindromeLinhas[2]||sindromeParLinhas[2])+1*(orSindromeLinhas[3]||sindromeParLinhas[3])+1*(orSindromeLinhas[4]||sindromeParLinhas[4]); //Calcula o numero de erros detectados pelas sindromes de paridade
+
+             for(i=0;i<4;i++){
+                 if((numLinhasSindrome==1)&&(orSindromeLinhas[i])!=0){
+                     for(j=0;j<C;j++){
+                         if(sindromeColuna[j]!=0){
+                             matrizCodificacao[i][j]=~matrizCodificacao[i][j]+2;
+                         }
+                     }
+                 } else if((sindromeParLinhas[i]!=0)&&(orSindromeLinhas[i]==0)){
+                     for(j=0;j<C;j++){
+                         if(sindromeColuna[j]!=0){
+                             matrizCodificacao[i][j]=~matrizCodificacao[i][j]+2;
+                         }
+                     }
+                 } else if(orSindromeLinhas[i]!=0){
+                     if(sindromeParLinhas[i]==0){
+                         for(j=0;j<C;j++){
+                             if(sindromeColuna[j]!=0){
+                                 matrizCodificacao[i][j]=~matrizCodificacao[i][j]+2;
+                             }
+                         }
+                     } else if(sindromeParLinhas[i]==1){
+                         if((sindromeLinhas[i][0]==0)&&(sindromeLinhas[i][1]==0)&&(sindromeLinhas[i][2]==1)){
+                             matrizCodificacao[i][6]=~matrizCodificacao[i][6]+2;
+                         }
+                         if((sindromeLinhas[i][0]==0)&&(sindromeLinhas[i][1]==1)&&(sindromeLinhas[i][2]==0)){
+                             matrizCodificacao[i][5]=~matrizCodificacao[i][5]+2;
+                         }
+                         if((sindromeLinhas[i][0]==1)&&(sindromeLinhas[i][1]==0)&&(sindromeLinhas[i][2]==0)){
+                             matrizCodificacao[i][4]=~matrizCodificacao[i][4]+2;
+                         }
+                         if((sindromeLinhas[i][0]==1)&&(sindromeLinhas[i][1]==1)&&(sindromeLinhas[i][2]==1)){
+                             matrizCodificacao[i][3]=~matrizCodificacao[i][3]+2;
+                         }
+                         if((sindromeLinhas[i][0]==1)&&(sindromeLinhas[i][1]==1)&&(sindromeLinhas[i][2]==0)){
+                             matrizCodificacao[i][2]=~matrizCodificacao[i][2]+2;
+                         }
+                         if((sindromeLinhas[i][0]==1)&&(sindromeLinhas[i][1]==0)&&(sindromeLinhas[i][2]==1)){
+                             matrizCodificacao[i][1]=~matrizCodificacao[i][1]+2;
+                         }
+                         if((sindromeLinhas[i][0]==0)&&(sindromeLinhas[i][1]==1)&&(sindromeLinhas[i][2]==1)){
+                             matrizCodificacao[i][0]=~matrizCodificacao[i][0]+2;
+                         }
+
+                     }
+                 }
+             }
+         }
+      printf("\nMatriz de SAIDA:\n");
+              for( i=0;i<L;i++){
+                  for(j=0;j<C;j++){
+                      printf("%d",matrizCodificacao[i][j]);
+                      printf("\t");
+                  }
+                  printf("\n");
+              }
+
+              //MOSTRAR MATRIZ COMPARACAO-----------------------------------------------
+              printf("\nMatriz de comparaco:\n");
+                         for(i=0;i<L;i++){
+                         	for(j=0;j<C;j++){
+                         		printf("%d",matrizComparacao[i][j]);
+                         		printf("\t");
+                         		}
+                         	printf("\n");
+                         	}
+
+
+              //COMPARAR SE AS DUAS MATRIZES SAO IGUAIS.---------------------------------------------
+                   for(i=0;i<L;i++){
+                   	for(j=0;j<C;j++){
+                   		if(matrizComparacao[i][j] != matrizCodificacao[i][j]){
+                   			igual = 0;
+                   		}
+                   	}
+                   }
+
+         //mostrando mensagem decodificada
+         printf("Mensagem decodificada: ");
+         for( i=0;i<a;i++){
+             for(j=0;j<a;j++){
+                 printf("%d",matrizCodificacao[i][j]);
+                // printf("\t");
+             }
+           //  printf("\n");
+         }
+
+
+         printf("\nSindrome paridade de coluna:\n");
+         for(i=0;i<C;i++){
+             printf("%d",sindromeColuna[i]);
+         }
+         printf("\nSindrome de linha:\n");
+         for(i=0;i<L;i++){
+             for(j=0;j<3;j++){
+                 printf("%d",sindromeLinhas[i][j]);
+                 printf("\t");
+             }
+             printf("\n");
+         }
+         printf("Sindrome paridade de linha:\n");
+         for(i=0;i<L;i++){
+             printf("%d",sindromeParLinhas[i]);
+         }
+         printf("\nNumero de erros em uma linha: ");
+         printf("%d",numLinhasSindrome);
+
+         rtiStopCounter(rtiCOUNTER_BLOCK0);
+         tickstart = rtiGetCurrentTick(rtiCOMPARE0);
+         tempoT=(tickstart/80000.0);
+         printf("\ntempo para decodificar em CLC: %f milisegundos\n",tempoT);
+
+         if(igual == 0){
+        	 printf("\nMensagem nao corrigida errorfatal\n\n");
+         }else if(igual == 1){
+        	 printf("\nMensagem foi totalmente corrigida zeroerror\n\n");
+         }
+         if (identificador ==0){
+        	 printf(" identificador zeroError\n");
+         }
+         else if (identificador ==1){
+               	 printf(" identificador umError\n");
+                }
+         else if (identificador ==2){
+                       	 printf(" identificador doisError\n");
+                        }
+         else if (identificador ==3){
+                       	 printf(" identificador tresError\n");
+                        }
+         else if (identificador ==4){
+                       	 printf(" identificador quatroError\n");
+                        }
+         else if (identificador ==5){
+                       	 printf(" identificador cincoError\n");
+                        }
+         else if (identificador ==6){
+                       	 printf(" identificador seisError\n");
+                        }
+         else if (identificador ==7){
+                       	 printf(" identificador seteError\n");
+                        }
+         else if (identificador ==8){
+                       	 printf(" identificador oitoError\n");
+                        }
+
+
+     }
+         //
+      //fim decodificacao
+
+
+
+
+      printf("\nvisualizando tcram1bit\n");
+      aux = (short int *) calloc(tamanho, sizeof(short int));
+
+      for(i=0; i<tamanho; i++){
+		if(tcram1bit & 1){
+			aux[i] = 1;
+			}
+		else{
+			aux[i] = 0;
+		    }
+		tcram1bit >>= 1;
+		}
+      for(i=tamanho-1; i>=0; i--){
+    	  printf("%d", aux[i]);
+	   	   }
+      free(aux);
+      printf("\n\n");
+
+      printf("Mostrando o valor de tcram1bitError\n");
+      aux = (short int *) calloc(tamanho2, sizeof(short int));
+      for(i=0; i<tamanho2; i++){
+					if(tcram1bitError & 1){
+						aux[i] = 1;
+					    }
+					else{
+						aux[i] = 0;
+						}
+					tcram1bitError >>= 1;
+      	  }
+      for(i=tamanho2-1; i>=0; i--){
+    	  printf("%d", aux[i]);
+      }
+      free(aux);
+      printf("\n\n");
+
+      read= tcram1bitError;		// see correct ECC value		///Veja o valor ECC correto
+      //ptr = &tcram1bitError;    //
+
+      printf("Read recebeu tcram1bitError\n");
+      aux = (short int *) calloc(tamanho2, sizeof(short int));
+      for(i=0; i<tamanho2; i++){
+				if(read & 1){
+					aux[i] = 1;
+				    }
+				else{
+					aux[i] = 0;
+				}
+				read >>= 1;
+      	  }
+      for(i=tamanho2-1; i>=0; i--){
+				printf("%d", aux[i]);
+			  }
+      free(aux);
+      printf("\n\n");
+      printf("\n**********\n");
+
+
+	//Habilitar as gravações para ECC RAM, ativar a resposta de erro ECC
+	ECC_EVEN_Ptr->RAMCTRL_UN.RAMCTRL_UL = 0x0005010A;
+	ECC_ODD_Ptr->RAMCTRL_UN.RAMCTRL_UL	= 0x0005010A;
+    //Definir limite de erro de bit único
+	ECC_EVEN_Ptr->RAMTHRESHOLD_UN.RAMTHRESHOLD_UL = 0x14;
+	ECC_ODD_Ptr->RAMTHRESHOLD_UN.RAMTHRESHOLD_UL  = 0xA;
+	printf("Entrando no teste\n");
+	printf("\n**********\n");
+    int aux1 = 0;
+
+	for(aux1=0; aux1<1;aux1++) ////////////////////////////////////INICIO RODADA
+		{
+		printf("rodada de numero %d\n", aux1+1);
+		printf("\n**********\n");
+		//introduce one bit error in data 1 ECC  ///Introduzir um erro de um bit em dados 1 ECC
+		printf("introduce one bit erro in data 1 ECC\n");
+		printf("tcram1bitError antes do flip\n");
+		aux = (short int *) calloc(tamanho, sizeof(short int));
+		for(i=0; i<tamanho; i++){
+			if(tcram1bitError & 1){
+				aux[i] = 1;
+				}
+				else{
+					aux[i] = 0;
+					}
+			tcram1bitError >>= 1;
+			}
+		for(i=tamanho-1; i>=0; i--){
+			printf("%d", aux[i]);
+			}
+		free(aux);
+		printf("\n\n");
+
+       ///////////introduzindo flip de bits aleatoriamente//////////////////////////**********************
+		printf("Numero aleatorio %d\n",aleatorio);
+
+	//	tcram1bitError = geraErro(tcram1bitError,aleatorio);
+	//	tcram1bitError ^=0x1;
+	//	tcram1bitError ^=0x2;
+		if(aleatorio < 20){
+			  tcram1bitError  = tcram1bitError^=0x1;//0x1; //1 erro
+			}
+			if(aleatorio==20 || aleatorio < 35){
+			  tcram1bitError =  tcram1bitError ^=0x2; // 2 erros
+
+			}
+			if(aleatorio==35 || aleatorio < 55){
+			  tcram1bitError =  tcram1bitError ^=0x3; // 3 erros
+			}
+			if(aleatorio==55 || aleatorio < 75){
+			  tcram1bitError =  tcram1bitError ^=4; // 4 erros
+			}
+			if(aleatorio==75 || aleatorio < 85){
+			  tcram1bitError =  tcram1bitError ^=5; // 5 erros
+			}
+			if(aleatorio==85 || aleatorio < 100){
+			  tcram1bitError =  tcram1bitError ^=6; // 6 erros
+			}
+
+		printf("tcram1bitError apos do flip\n");
+		aux = (short int *) calloc(tamanho, sizeof(short int));
+		for(i=0; i<tamanho; i++){
+			if(tcram1bitError & 1){
+				aux[i] = 1;
+				}
+			else{
+				aux[i] = 0;
+				}
+			tcram1bitError >>= 1;
+				}
+		for(i=tamanho-1; i>=0; i--){
+			printf("%d", aux[i]);
+			}
+		free(aux);
+		printf("\n\n");
+
+		SBE_counter1=ECC_EVEN_Ptr->RAMOCCUR_UN.RAMOCCUR_UL; ///RAMOCCUR conta os erros de bit unico corrigidos pela logica SECDED da CPU
+		read=tcram1bitError;///Verifique o valor ECC incorreto
+		printf("Verifique o valor ECC incorreto --> read 02: *****\n");
+		printf("verificando o valor de read\n");
+	    aux = (short int *) calloc(tamanho, sizeof(short int));
+	    for(i=0; i<tamanho; i++){
+	    	if(read & 1){
+	    		aux[i] = 1;
+	    	}
+	    	else{
+	    		aux[i] = 0;
+	    	}
+	    	read >>= 1;
+	    	}
+	    for(i=tamanho-1; i>=0; i--){
+	    	printf("%d", aux[i]);
+	    	}
+	    free(aux);
+	    printf("\n\n");
+	  //
+	    printf("\n********\n");
+	    printf("Habilitando o  ECC check\n");
+	    //iniciando medicao de tempo para habilitar ECC
+	    rtiStopCounter(rtiCOUNTER_BLOCK0);
+	    rtiResetCounter(rtiCOUNTER_BLOCK0);
+	    rtiStartCounter(rtiCOUNTER_BLOCK0);
+		_coreEnableRamEcc_(); ///Habilitar o cheque ECC
+		read=tcram1bit; ///Ler dados RAM, detectará o erro de um bit
+		rtiStopCounter(rtiCOUNTER_BLOCK0);
+		tickstart = rtiGetCurrentTick(rtiCOMPARE0);
+		tempoT=(tickstart/80000.0);
+		 printf("\ntempo para checar o ECC: %f milisegundos\n",tempoT);
+
+		printf("verificando o valor de read\n");
+		aux = (short int *) calloc(tamanho, sizeof(short int));
+		for(i=0; i<tamanho; i++){
+			if(read & 1){
+				aux[i] = 1;
+			}
+			else{
+				aux[i] = 0;
+			}
+			read >>= 1;
+			}
+		for(i=tamanho-1; i>=0; i--){
+			printf("%d", aux[i]);
+			}
+		free(aux);
+		printf("\n\n");
+		printf("Ler dados RAM, detectará o erro de um bit\n");
+		printf("print read 03: *****\n");
+		aux = (short int *) calloc(tamanho, sizeof(short int));
+		for(i=0; i<tamanho; i++){
+			if(read & 1){
+				aux[i] = 1;
+			}
+			else{
+				aux[i] = 0;
+			}
+			read >>= 1;
+			}
+		for(i=tamanho-1; i>=0; i--){
+			printf("%d", aux[i]);
+			}
+		free(aux);
+		printf("\n\n");
+		printf("\n********\n");
+		printf("Desativar verificacao ECC\n");
+		_coreDisableRamEcc_();  //  disable ECC check 		///Desativar verificação ECC
+		read=tcram1bitError;	//  See corrected ECC value		///Veja o valor ECC corrigido
+		printf("Veja o valor ECC corrigido\n");
+		printf("verificando o valor de read\n");
+	    aux = (short int *) calloc(tamanho, sizeof(short int));
+	    for(i=0; i<tamanho; i++){
+	    	if(read & 1){
+	    		aux[i] = 1;
+	    	}
+	    	else{
+	    		aux[i] = 0;
+	    	}
+	    	read >>= 1;
+	    	}
+	    for(i=tamanho-1; i>=0; i--){
+	    	printf("%d", aux[i]);
+	    	}
+	    free(aux);
+	    printf("\n\n");
+		printf("\n********\n");
+/////comecar a contagem de erros
+		SBE_counter1=ECC_EVEN_Ptr->RAMOCCUR_UN.RAMOCCUR_UL;	// Read one bit error counter, see the change 			///Leia um contador de erros de um bit, veja a mudança
+		printf("Leia um contador de erros de um bit, veja a mudança\n");
+		printf("print SBE:  01: *****\n");
+		printf("%d\n",SBE_counter1);
+		printf("verificando o valor de SBE_counter1\n");
+			    aux = (short int *) calloc(tamanho, sizeof(short int));
+			    for(i=0; i<tamanho; i++){
+			    	if(SBE_counter1 & 1){
+			    		aux[i] = 1;
+			    	}
+			    	else{
+			    		aux[i] = 0;
+			    	}
+			    	read >>= 1;
+			    	}
+			    for(i=tamanho-1; i>=0; i--){
+			    	printf("%d", aux[i]);
+			    	}
+			    free(aux);
+			    printf("\n\n");
+
+printf("Encontramos %d errobits na rodada\n",SBE_counter1);
+
+    //double verF= (double) tcram1bit;
+	tcram1bit = 0x5A;
+	uint32_t vref = tcram1bit;
+	rtiStopCounter(rtiCOUNTER_BLOCK0);
+	rtiResetCounter(rtiCOUNTER_BLOCK0);
+	rtiStartCounter(rtiCOUNTER_BLOCK0);
+	int resultado =  fibonacci(vref/10);
+	rtiStopCounter(rtiCOUNTER_BLOCK0);
+	tickstart = rtiGetCurrentTick(rtiCOMPARE0);
+	printf("Valor para calculo de fibonacci %d \n", vref);
+    printf("resultado do fibonacci é  %d \n",resultado);
+
+    tempoT=(tickstart/80000.0);
+    printf("tempo para executar fibonacci %f milisegundos\n",tempoT);
+    printf("Saindo do teste\n");
